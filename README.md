@@ -151,3 +151,14 @@ This repository is intended as a learning resource for those looking to:
 -   Learn how to integrate a custom model into the Hugging Face ecosystem.
 -   See an example of weight conversion and model loading for custom architectures.
 -   Understand the difference between using a pre-packaged Hub model and loading local weights. 
+## Development
+
+Run pre-commit to format and lint code:
+```bash
+pre-commit run --all-files
+```
+
+Execute the test suite with:
+```bash
+pytest -q
+```

@@ -11,7 +11,9 @@ def convert_and_load_weights(model: Qwen3ForCausalLM, original_weights_path: str
         original_state_dict = torch.load(original_weights_path, map_location="cpu")
     except FileNotFoundError:
         print(f"Error: Weight file not found at '{original_weights_path}'")
-        print("Please download the original weights and place them in the correct directory.")
+        print(
+            "Please download the original weights and place them in the correct directory."
+        )
         return
 
     hf_state_dict = {}
@@ -42,21 +44,45 @@ def convert_and_load_weights(model: Qwen3ForCausalLM, original_weights_path: str
     # Per-layer mappings
     for i in range(model.config.n_layer):
         # Attention
-        hf_state_dict[f"layers.{i}.input_layernorm.weight"] = original_state_dict[f"layers.{i}.attention_norm.weight"]
-        hf_state_dict[f"layers.{i}.self_attn.q_proj.weight"] = original_state_dict[f"layers.{i}.attention.wq.weight"]
-        hf_state_dict[f"layers.{i}.self_attn.q_proj.bias"] = original_state_dict[f"layers.{i}.attention.wq.bias"]
-        hf_state_dict[f"layers.{i}.self_attn.k_proj.weight"] = original_state_dict[f"layers.{i}.attention.wk.weight"]
-        hf_state_dict[f"layers.{i}.self_attn.k_proj.bias"] = original_state_dict[f"layers.{i}.attention.wk.bias"]
-        hf_state_dict[f"layers.{i}.self_attn.v_proj.weight"] = original_state_dict[f"layers.{i}.attention.wv.weight"]
-        hf_state_dict[f"layers.{i}.self_attn.v_proj.bias"] = original_state_dict[f"layers.{i}.attention.wv.bias"]
-        hf_state_dict[f"layers.{i}.self_attn.o_proj.weight"] = original_state_dict[f"layers.{i}.attention.wo.weight"]
+        hf_state_dict[f"layers.{i}.input_layernorm.weight"] = original_state_dict[
+            f"layers.{i}.attention_norm.weight"
+        ]
+        hf_state_dict[f"layers.{i}.self_attn.q_proj.weight"] = original_state_dict[
+            f"layers.{i}.attention.wq.weight"
+        ]
+        hf_state_dict[f"layers.{i}.self_attn.q_proj.bias"] = original_state_dict[
+            f"layers.{i}.attention.wq.bias"
+        ]
+        hf_state_dict[f"layers.{i}.self_attn.k_proj.weight"] = original_state_dict[
+            f"layers.{i}.attention.wk.weight"
+        ]
+        hf_state_dict[f"layers.{i}.self_attn.k_proj.bias"] = original_state_dict[
+            f"layers.{i}.attention.wk.bias"
+        ]
+        hf_state_dict[f"layers.{i}.self_attn.v_proj.weight"] = original_state_dict[
+            f"layers.{i}.attention.wv.weight"
+        ]
+        hf_state_dict[f"layers.{i}.self_attn.v_proj.bias"] = original_state_dict[
+            f"layers.{i}.attention.wv.bias"
+        ]
+        hf_state_dict[f"layers.{i}.self_attn.o_proj.weight"] = original_state_dict[
+            f"layers.{i}.attention.wo.weight"
+        ]
 
         # MLP
-        hf_state_dict[f"layers.{i}.post_attention_layernorm.weight"] = original_state_dict[f"layers.{i}.ffn_norm.weight"]
-        hf_state_dict[f"layers.{i}.mlp.gate_proj.weight"] = original_state_dict[f"layers.{i}.feed_forward.w1.weight"]
-        hf_state_dict[f"layers.{i}.mlp.up_proj.weight"] = original_state_dict[f"layers.{i}.feed_forward.w3.weight"]
-        hf_state_dict[f"layers.{i}.mlp.down_proj.weight"] = original_state_dict[f"layers.{i}.feed_forward.w2.weight"]
+        hf_state_dict[f"layers.{i}.post_attention_layernorm.weight"] = (
+            original_state_dict[f"layers.{i}.ffn_norm.weight"]
+        )
+        hf_state_dict[f"layers.{i}.mlp.gate_proj.weight"] = original_state_dict[
+            f"layers.{i}.feed_forward.w1.weight"
+        ]
+        hf_state_dict[f"layers.{i}.mlp.up_proj.weight"] = original_state_dict[
+            f"layers.{i}.feed_forward.w3.weight"
+        ]
+        hf_state_dict[f"layers.{i}.mlp.down_proj.weight"] = original_state_dict[
+            f"layers.{i}.feed_forward.w2.weight"
+        ]
 
     # Load the mapped weights into our model
     model.load_state_dict(hf_state_dict)
-    print("Successfully loaded and converted weights.") 
+    print("Successfully loaded and converted weights.")

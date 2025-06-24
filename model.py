@@ -11,33 +11,33 @@ NOTEBOOK ANALYSIS & ARCHITECTURAL OVERVIEW:
 ==========================================
 
 Model Architecture:
-This implementation follows a standard decoder-only transformer architecture, 
+This implementation follows a standard decoder-only transformer architecture,
 characteristic of models like GPT. The key architectural components include:
 
-1. **RMSNorm**: Used for normalization instead of LayerNorm. RMSNorm (Root Mean Square 
+1. **RMSNorm**: Used for normalization instead of LayerNorm. RMSNorm (Root Mean Square
    Layer Normalization) is simpler and often more efficient than standard LayerNorm,
    as it doesn't subtract the mean, only normalizes by the root-mean-square.
 
-2. **Rotary Positional Embeddings (RoPE)**: Applied to queries and keys in the 
+2. **Rotary Positional Embeddings (RoPE)**: Applied to queries and keys in the
    self-attention mechanism for encoding positional information. RoPE encodes position
    by rotating the query and key vectors based on their absolute position, allowing
    for better length extrapolation compared to learned positional embeddings.
 
-3. **Grouped-Query Attention (GQA)**: A variant of multi-head attention where multiple 
+3. **Grouped-Query Attention (GQA)**: A variant of multi-head attention where multiple
    query heads share a single key and value head to reduce computational and memory costs.
    However, this implementation uses Multi-Head Attention (MHA) for simplicity and
    educational clarity, following the notebook's approach where n_head == n_kv_head.
 
 4. **SwiGLU Activation**: The feed-forward network uses SwiGLU (Swish-Gated Linear Unit)
-   activation function, which is common in modern LLMs. SwiGLU combines Swish/SiLU 
+   activation function, which is common in modern LLMs. SwiGLU combines Swish/SiLU
    activation with a gating mechanism: SwiGLU(x) = Swish(xW + b) ⊙ (xV + c).
 
-5. **tiktoken Tokenizer**: Uses a tiktoken-based tokenizer with custom vocabulary and 
+5. **tiktoken Tokenizer**: Uses a tiktoken-based tokenizer with custom vocabulary and
    special tokens, wrapped for Hugging Face compatibility.
 
 Weight Loading & Conversion:
-The implementation includes functionality to load pretrained weights from PyTorch .pth 
-files and demonstrates the mapping between original weight names and Hugging Face 
+The implementation includes functionality to load pretrained weights from PyTorch .pth
+files and demonstrates the mapping between original weight names and Hugging Face
 model layer names for seamless integration.
 
 Text Generation Capabilities:
@@ -64,47 +64,53 @@ USAGE:
 1. Install required libraries: `torch`, `transformers`, `huggingface-hub`
 2. Run main() for Hub-based inference (recommended for production)
 
-This implementation serves as both a working model and an educational resource for 
+This implementation serves as both a working model and an educational resource for
 understanding modern transformer architectures and their integration with the Hugging Face ecosystem.
 """
 
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-import math
-from dataclasses import dataclass
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict
 
 # Suppress Hugging Face tokenizer parallelism warning
 import os
+
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # Hugging Face imports
-from transformers import PretrainedConfig, PreTrainedModel, AutoModelForCausalLM, AutoTokenizer
-from transformers.utils.generic import ModelOutput
+from transformers import (
+    PretrainedConfig,
+    PreTrainedModel,
+    AutoModelForCausalLM,
+    AutoTokenizer,
+)
 from transformers.modeling_outputs import CausalLMOutputWithPast
+import tiktoken
+from tiktoken.load import load_tiktoken_bpe
 
 
 # =============================================================================
 # 1. Configuration Class
 # =============================================================================
 
+
 class Qwen3Config(PretrainedConfig):
     """
     Configuration class for Qwen3 model, storing all architectural hyperparameters.
-    
-    This class inherits from `PretrainedConfig` to ensure full compatibility with the 
-    Hugging Face ecosystem, enabling easy save/load of model configurations and 
+
+    This class inherits from `PretrainedConfig` to ensure full compatibility with the
+    Hugging Face ecosystem, enabling easy save/load of model configurations and
     integration with training/inference scripts.
-    
+
     ARCHITECTURAL DECISIONS:
     - Follows standard decoder-only transformer design
-    - Uses Multi-Head Attention (MHA) instead of Grouped-Query Attention (GQA) 
+    - Uses Multi-Head Attention (MHA) instead of Grouped-Query Attention (GQA)
       for educational clarity (n_head == n_kv_head)
     - Incorporates RoPE (Rotary Positional Embeddings) for position encoding
     - Uses SwiGLU activation in the feed-forward network
     - RMSNorm for layer normalization instead of standard LayerNorm
-    
+
     Args:
         vocab_size (int): Size of the vocabulary (number of tokens)
         context_len (int): Maximum sequence length the model can handle
@@ -114,12 +120,13 @@ class Qwen3Config(PretrainedConfig):
         intermediate_size (int): Dimension of the feed-forward network's hidden layer
         rope_theta (float): Base frequency for RoPE (Rotary Positional Embeddings)
     """
+
     model_type = "qwen3_from_scratch"
-    attribute_map = { # Mapping for compatibility with HF trainer/inference scripts
+    attribute_map = {  # Mapping for compatibility with HF trainer/inference scripts
         "hidden_size": "n_embd",
         "num_attention_heads": "n_head",
         "num_hidden_layers": "n_layer",
-        "max_position_embeddings": "context_len"
+        "max_position_embeddings": "context_len",
     }
 
     def __init__(
@@ -129,9 +136,9 @@ class Qwen3Config(PretrainedConfig):
         n_layer: int = 32,
         n_head: int = 32,
         n_embd: int = 4096,
-        intermediate_size: int = 22016, # From the original model config
+        intermediate_size: int = 22016,  # From the original model config
         rope_theta: float = 10000.0,
-        **kwargs
+        **kwargs,
     ):
         self.vocab_size = vocab_size
         self.context_len = context_len
@@ -155,38 +162,40 @@ class Qwen3Config(PretrainedConfig):
 # 2. From-Scratch Model Components (as nn.Module)
 # =============================================================================
 
+
 class RMSNorm(nn.Module):
     """
     Root Mean Square Layer Normalization (RMSNorm).
-    
+
     RMSNorm is a simpler and often more efficient alternative to standard LayerNorm.
-    Unlike LayerNorm, RMSNorm doesn't subtract the mean - it only normalizes by the 
-    root-mean-square, making it computationally lighter while maintaining similar 
+    Unlike LayerNorm, RMSNorm doesn't subtract the mean - it only normalizes by the
+    root-mean-square, making it computationally lighter while maintaining similar
     performance in many cases.
-    
+
     MATHEMATICAL FORMULATION:
     RMSNorm(x) = (x / √(mean(x²) + ε)) * γ
-    
+
     Where:
     - x is the input tensor
     - mean(x²) is the mean of squared elements across the last dimension
-    - ε is a small constant for numerical stability  
+    - ε is a small constant for numerical stability
     - γ is a learnable scaling parameter
-    
+
     ADVANTAGES OVER LAYERNORM:
     - Simpler computation (no mean subtraction)
     - Slightly faster in practice
     - Often works just as well as LayerNorm for language models
     - Used in many modern LLMs including LLaMA, PaLM, and Qwen
-    
+
     Args:
         dim (int): The dimension to normalize (typically the embedding dimension)
         eps (float): Small constant for numerical stability (default: 1e-5)
     """
+
     def __init__(self, dim: int, eps: float = 1e-5):
         super().__init__()
         self.eps = eps
-        self.weight = nn.Parameter(torch.ones(dim)) # Learnable scaling parameter γ
+        self.weight = nn.Parameter(torch.ones(dim))  # Learnable scaling parameter γ
 
     def _norm(self, x):
         # Calculate root mean square across the last dimension
@@ -203,29 +212,30 @@ class RMSNorm(nn.Module):
 class RotaryEmbedding(nn.Module):
     """
     Rotary Positional Embeddings (RoPE) implementation.
-    
+
     RoPE encodes positional information by rotating query and key vectors in attention
     based on their absolute position. This approach has several advantages over learned
     positional embeddings:
-    
+
     ADVANTAGES OF ROPE:
     - Better length extrapolation (can handle sequences longer than training)
     - Relative position encoding emerges naturally from absolute position rotation
     - No additional parameters needed beyond the base frequency (theta)
     - More efficient than adding positional embeddings to token embeddings
-    
+
     MATHEMATICAL FOUNDATION:
     For each position m and dimension pair (2i, 2i+1), RoPE applies rotation:
     [x₂ᵢ']     [cos(m·θᵢ)  -sin(m·θᵢ)] [x₂ᵢ]
     [x₂ᵢ₊₁'] = [sin(m·θᵢ)   cos(m·θᵢ)] [x₂ᵢ₊₁]
-    
+
     Where θᵢ = θ^(-2i/d) and θ is the base frequency (typically 10000)
-    
+
     Args:
         dim (int): Dimension of each attention head (must be even)
         max_seq_len (int): Maximum sequence length to precompute frequencies for
         theta (float): Base frequency for the rotation (default: 10000.0)
     """
+
     def __init__(self, dim, max_seq_len, theta=10000.0):
         super().__init__()
         # Dimension must be even for rotation pairs
@@ -249,7 +259,7 @@ class RotaryEmbedding(nn.Module):
     def forward(self, x: torch.Tensor, start_pos: int = 0):
         """
         Get precomputed rotation frequencies for the given sequence.
-        
+
         Args:
             x (torch.Tensor): Input tensor of shape (B, Seq_Len, H, Head_Dim)
             start_pos (int): Starting position (used for KV caching during generation)
@@ -260,7 +270,7 @@ class RotaryEmbedding(nn.Module):
         # Ensure frequencies are on the same device as input
         if self.freqs_cis.device != x.device:
             self.freqs_cis = self.freqs_cis.to(x.device)
-        
+
         # Extract frequencies for current sequence positions
         return self.freqs_cis[start_pos : start_pos + seq_len]
 
@@ -268,16 +278,16 @@ class RotaryEmbedding(nn.Module):
 def apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
     """
     Apply rotary embeddings to input tensor using precomputed frequencies.
-    
+
     This function performs the core RoPE transformation by treating pairs of real
     numbers as complex numbers and multiplying by the rotation frequencies.
-    
+
     IMPLEMENTATION DETAILS:
     1. Reshape input to treat consecutive dimension pairs as complex numbers
     2. Convert to complex tensor representation
     3. Multiply by precomputed rotation frequencies (complex multiplication = rotation)
     4. Convert back to real tensor and reshape to original dimensions
-    
+
     Args:
         x (torch.Tensor): Input tensor of shape (B, Seq_Len, H, Head_Dim)
         freqs_cis (torch.Tensor): Rotation frequencies of shape (Seq_Len, Head_Dim/2)
@@ -302,34 +312,35 @@ def apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
 class Qwen3Attention(nn.Module):
     """
     Multi-Head Self-Attention with Rotary Positional Embeddings and KV Caching.
-    
+
     This implementation follows the standard multi-head attention mechanism but with
     several modern enhancements:
-    
+
     ARCHITECTURAL FEATURES:
     - **RoPE Integration**: Applies rotary positional embeddings to Q and K vectors
     - **KV Caching**: Supports efficient autoregressive generation by caching past keys/values
     - **Multi-Head Attention**: Uses MHA instead of GQA for educational clarity
     - **Causal Masking**: Implements causal attention for decoder-only architecture
     - **Optimized Attention**: Uses PyTorch's scaled_dot_product_attention for efficiency
-    
+
     ATTENTION VS GQA TRADE-OFF:
     While the original Qwen architecture uses Grouped-Query Attention (GQA) to reduce
     computational costs by sharing key/value heads across multiple query heads, this
     implementation uses standard Multi-Head Attention where each head has its own
     Q, K, V projections. This choice prioritizes:
     - Educational clarity and simplicity
-    - Easier understanding of attention mechanisms  
+    - Easier understanding of attention mechanisms
     - Direct correspondence with many tutorial materials
-    
+
     For production GQA implementation, you would:
     - Add n_kv_head parameter (< n_head)
     - Modify K,V projections to use n_kv_head * head_dim
     - Implement key/value head sharing logic
-    
+
     Args:
         config (Qwen3Config): Model configuration containing architectural parameters
     """
+
     def __init__(self, config: Qwen3Config):
         super().__init__()
         self.config = config
@@ -345,7 +356,9 @@ class Qwen3Attention(nn.Module):
         self.o_proj = nn.Linear(self.n_embd, self.n_embd, bias=False)
 
         # Initialize RoPE with head dimension and context length
-        self.rotary_emb = RotaryEmbedding(self.head_dim, config.context_len, theta=config.rope_theta)
+        self.rotary_emb = RotaryEmbedding(
+            self.head_dim, config.context_len, theta=config.rope_theta
+        )
 
     def forward(
         self,
@@ -354,8 +367,12 @@ class Qwen3Attention(nn.Module):
         past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
         output_attentions: bool = False,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
-        
+    ) -> Tuple[
+        torch.Tensor,
+        Optional[torch.Tensor],
+        Optional[Tuple[torch.Tensor, torch.Tensor]],
+    ]:
+
         batch_size, seq_len, _ = x.shape
 
         # 1. Project input to Q, K, V
@@ -394,10 +411,9 @@ class Qwen3Attention(nn.Module):
         # 6. Compute scaled dot-product attention with causal masking
         # Using PyTorch's optimized implementation for memory efficiency and speed
         attn_output = F.scaled_dot_product_attention(
-            q, k, v,
-            is_causal=True  # Critical for decoder-only models!
+            q, k, v, is_causal=True  # Critical for decoder-only models!
         )
-        
+
         # Note: For more complex masking (e.g., padding tokens), you would pass
         # attention_mask here, but causal masking is sufficient for this implementation
 
@@ -419,37 +435,38 @@ class Qwen3Attention(nn.Module):
 class Qwen3MLP(nn.Module):
     """
     Feed-Forward Network with SwiGLU Activation.
-    
+
     This MLP implements the SwiGLU (Swish-Gated Linear Unit) activation function,
     which has become standard in modern large language models due to its superior
     performance compared to traditional activations like ReLU or GELU.
-    
+
     SWIGLU ARCHITECTURE:
     The SwiGLU activation combines two concepts:
     1. **Swish/SiLU Activation**: f(x) = x * sigmoid(x), smooth and non-monotonic
     2. **Gated Linear Unit (GLU)**: Element-wise gating mechanism
-    
+
     MATHEMATICAL FORMULATION:
     SwiGLU(x) = Swish(x * W_gate + b_gate) ⊙ (x * W_up + b_up)
     Output = (SwiGLU_result) * W_down + b_down
-    
+
     Where ⊙ denotes element-wise multiplication (Hadamard product)
-    
+
     ADVANTAGES OF SWIGLU:
     - Better gradient flow compared to ReLU-based activations
     - Gating mechanism allows selective information passage
     - Empirically shown to improve model performance in LLMs
     - Used in models like PaLM, LLaMA, and Qwen
-    
+
     ARCHITECTURE DETAILS:
     - gate_proj: Projects input to intermediate dimension with SiLU activation
     - up_proj: Projects input to intermediate dimension (no activation)
     - down_proj: Projects back to embedding dimension
     - intermediate_size: Typically 2.67x the embedding dimension (e.g., 4096 -> ~11K)
-    
+
     Args:
         config (Qwen3Config): Model configuration with embedding and intermediate dimensions
     """
+
     def __init__(self, config: Qwen3Config):
         super().__init__()
         self.config = config
@@ -475,45 +492,46 @@ class Qwen3MLP(nn.Module):
 class Qwen3Block(nn.Module):
     """
     Complete Transformer Block combining Attention and MLP with residual connections.
-    
+
     This class implements one complete transformer layer following the standard
     architecture used in decoder-only models. The block consists of:
-    
+
     ARCHITECTURE PATTERN:
     Input → RMSNorm → Multi-Head Attention → Residual Connection
            ↓
           RMSNorm → SwiGLU MLP → Residual Connection → Output
-    
+
     KEY DESIGN CHOICES:
     - **Pre-Normalization**: RMSNorm is applied before attention and MLP (not after)
     - **Residual Connections**: Enable deep network training and gradient flow
     - **RMSNorm**: Used instead of LayerNorm for efficiency
     - **SwiGLU MLP**: Modern activation function for better performance
-    
+
     PRE-NORM VS POST-NORM:
     This implementation uses pre-normalization (norm before attention/MLP) which:
     - Provides more stable training for deep networks
     - Better gradient flow in very deep models
     - Has become the standard in modern transformer architectures
     - Used in GPT-3/4, LLaMA, PaLM, and other recent models
-    
+
     RESIDUAL CONNECTIONS:
     The residual connections (x + f(x)) are crucial for:
     - Training stability in deep networks
-    - Gradient flow during backpropagation  
+    - Gradient flow during backpropagation
     - Allowing the model to learn identity mappings when needed
     - Enabling successful scaling to hundreds of layers
-    
+
     Args:
         config (Qwen3Config): Model configuration containing all architectural parameters
     """
+
     def __init__(self, config: Qwen3Config):
         super().__init__()
         # Pre-attention normalization
         self.input_layernorm = RMSNorm(config.n_embd)
         # Multi-head self-attention with RoPE
         self.self_attn = Qwen3Attention(config)
-        # Pre-MLP normalization  
+        # Pre-MLP normalization
         self.post_attention_layernorm = RMSNorm(config.n_embd)
         # Feed-forward network with SwiGLU
         self.mlp = Qwen3MLP(config)
@@ -525,7 +543,11 @@ class Qwen3Block(nn.Module):
         past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
         output_attentions: bool = False,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
+    ) -> Tuple[
+        torch.Tensor,
+        Optional[torch.Tensor],
+        Optional[Tuple[torch.Tensor, torch.Tensor]],
+    ]:
 
         # 1. First Sub-Layer: Multi-Head Self-Attention with Pre-Normalization
         # Store residual connection
@@ -560,22 +582,23 @@ class Qwen3Block(nn.Module):
 # 3. Full Model Definition (Hugging Face Compatible)
 # =============================================================================
 
+
 class Qwen3ForCausalLM(PreTrainedModel):
     """
     Complete Qwen3 Model for Causal Language Modeling with Hugging Face Integration.
-    
+
     This is the main model class that assembles all components into a complete
     decoder-only transformer for autoregressive language modeling. By inheriting
     from `transformers.PreTrainedModel`, it gains access to the entire Hugging Face
     ecosystem including generation, training, and model hub functionality.
-    
+
     FULL ARCHITECTURE OVERVIEW:
     Input Token IDs → Embedding Layer → Stack of Transformer Blocks → Final RMSNorm → Language Model Head → Logits
-    
+
     Each Transformer Block contains:
     - RMSNorm → Multi-Head Attention with RoPE → Residual Connection
     - RMSNorm → SwiGLU MLP → Residual Connection
-    
+
     HUGGING FACE INTEGRATION BENEFITS:
     - **Automatic Generation**: Access to sophisticated generate() method with sampling strategies
     - **Model Hub**: Easy save/load with push_to_hub() and from_pretrained()
@@ -583,24 +606,25 @@ class Qwen3ForCausalLM(PreTrainedModel):
     - **Tokenizer Integration**: Seamless work with tokenizers and data loaders
     - **Mixed Precision**: Automatic support for fp16/bf16 training and inference
     - **Device Management**: Automatic device placement and data parallel training
-    
+
     ARCHITECTURAL DECISIONS EXPLAINED:
     1. **Decoder-Only**: Follows GPT-style architecture for autoregressive generation
     2. **Embedding Sharing**: Language model head can optionally share weights with embeddings
     3. **Final Normalization**: RMSNorm before language model head for stability
     4. **Causal Attention**: Each token can only attend to previous tokens
     5. **Position Encoding**: Uses RoPE instead of learned positional embeddings
-    
+
     GENERATION CAPABILITIES:
     - **Autoregressive Generation**: Predicts next token given previous context
     - **Sampling Strategies**: Supports greedy, top-k, top-p, temperature sampling
     - **KV Caching**: Efficient generation by caching attention keys/values
     - **Batch Generation**: Can generate multiple sequences simultaneously
     - **Length Control**: Max length, stopping criteria, and early stopping support
-    
+
     Args:
         config (Qwen3Config): Model configuration with all architectural parameters
     """
+
     # Associate with custom configuration class
     config_class = Qwen3Config
 
@@ -642,18 +666,18 @@ class Qwen3ForCausalLM(PreTrainedModel):
     ) -> CausalLMOutputWithPast:
         """
         Forward pass implementing the complete transformer computation.
-        
+
         COMPUTATION FLOW:
         1. Token Embedding: Convert token IDs to dense vectors
         2. Transformer Layers: Apply N transformer blocks sequentially
         3. Final Normalization: Apply RMSNorm to final hidden states
         4. Language Model Head: Project to vocabulary logits
         5. Loss Computation: Calculate cross-entropy loss if labels provided
-        
+
         KV CACHING SUPPORT:
         During generation, past_key_values enables efficient autoregressive decoding
         by caching attention keys/values from previous steps, avoiding recomputation.
-        
+
         Args:
             input_ids: Token IDs of shape (batch_size, sequence_length)
             attention_mask: Optional attention mask (not used in this implementation)
@@ -663,17 +687,25 @@ class Qwen3ForCausalLM(PreTrainedModel):
             output_hidden_states: Whether to return all hidden states
             return_dict: Whether to return structured output
             labels: Ground truth tokens for loss computation (training)
-            
+
         Returns:
             CausalLMOutputWithPast containing logits, loss, and optional cached states
         """
         # Set default values from config if not provided
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_attentions = (
+            output_attentions
+            if output_attentions is not None
+            else self.config.output_attentions
+        )
         output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+            output_hidden_states
+            if output_hidden_states is not None
+            else self.config.output_hidden_states
         )
         use_cache = use_cache if use_cache is not None else self.config.use_cache
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
 
         # 1. Token embeddings: (batch_size, seq_len) -> (batch_size, seq_len, n_embd)
         hidden_states = self.embed_tokens(input_ids)
@@ -740,49 +772,48 @@ class Qwen3ForCausalLM(PreTrainedModel):
 # 4. Tokenizer
 # =============================================================================
 
-import tiktoken
-from tiktoken.load import load_tiktoken_bpe
 
 class Qwen3Tokenizer:
     """
     Hugging Face-compatible wrapper for Qwen's tiktoken-based tokenizer.
-    
+
     This class bridges the gap between the original Qwen tokenizer (based on tiktoken)
     and the Hugging Face ecosystem. The tiktoken library provides efficient tokenization
     using Byte-Pair Encoding (BPE) with custom vocabularies and special tokens.
-    
+
     TIKTOKEN ADVANTAGES:
     - **Efficiency**: Faster tokenization compared to standard HF tokenizers
     - **Memory Efficient**: Lower memory footprint for large vocabularies
     - **Custom Vocabularies**: Supports domain-specific or multilingual vocabularies
     - **Special Token Handling**: Robust handling of chat formatting and control tokens
-    
+
     TOKENIZATION FEATURES:
     - **BPE Encoding**: Uses merged byte-pair rankings for subword tokenization
     - **Special Tokens**: Handles chat formatting tokens like <|im_start|>, <|im_end|>
     - **Regex Patterns**: Custom regex for proper handling of text boundaries
     - **Unicode Support**: Proper handling of multilingual text and special characters
-    
+
     HUGGING FACE COMPATIBILITY:
     This wrapper provides the essential methods expected by HF models:
     - encode(): Text -> token IDs
-    - decode(): Token IDs -> text  
+    - decode(): Token IDs -> text
     - __call__(): Returns dict with 'input_ids' for model input
     - Standard attributes: vocab_size, eos_token_id, pad_token_id
-    
+
     SPECIAL TOKENS:
     - <|im_start|>: Start of a message in chat format
     - <|im_end|>: End of a message in chat format
     - <|endoftext|>: End of document/conversation token
-    
+
     Args:
         tokenizer_path (str): Path to the .tiktoken vocabulary file
     """
+
     def __init__(self, tokenizer_path="qwen.tiktoken"):
         # Define special tokens used in Qwen chat format
         special_tokens = {
-            "<|im_start|>": 151645,   # Chat message start
-            "<|im_end|>": 151644,     # Chat message end
+            "<|im_start|>": 151645,  # Chat message start
+            "<|im_end|>": 151644,  # Chat message end
             "<|endoftext|>": 151643,  # End of text/document
         }
 
@@ -796,24 +827,26 @@ class Qwen3Tokenizer:
             # - Unicode character classes
             pat_str=r"""(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?+\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]++[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+""",
             mergeable_ranks=load_tiktoken_bpe(tokenizer_path),
-            special_tokens=special_tokens
+            special_tokens=special_tokens,
         )
-        
+
         # Set attributes expected by Hugging Face ecosystem
         self.vocab_size = self.tokenizer.n_words
         self.special_tokens = special_tokens
         self.pad_token_id = self.tokenizer.n_words  # Use a new token ID for padding
         self.eos_token_id = special_tokens["<|endoftext|>"]
-        self.bos_token_id = None  # Qwen doesn't typically use a beginning-of-sequence token
+        self.bos_token_id = (
+            None  # Qwen doesn't typically use a beginning-of-sequence token
+        )
 
     def encode(self, text: str, **kwargs) -> list[int]:
         """
         Encode text to token IDs.
-        
+
         Args:
             text (str): Input text to tokenize
             **kwargs: Additional arguments (for compatibility)
-            
+
         Returns:
             list[int]: List of token IDs
         """
@@ -823,25 +856,27 @@ class Qwen3Tokenizer:
     def decode(self, token_ids: list[int], **kwargs) -> str:
         """
         Decode token IDs back to text.
-        
+
         Args:
             token_ids (list[int]): List of token IDs to decode
             **kwargs: Additional arguments (for compatibility)
-            
+
         Returns:
             str: Decoded text
         """
         return self.tokenizer.decode(token_ids)
 
-    def __call__(self, text: str, return_tensors: str = "pt", **kwargs) -> Dict[str, torch.Tensor]:
+    def __call__(
+        self, text: str, return_tensors: str = "pt", **kwargs
+    ) -> Dict[str, torch.Tensor]:
         """
         Tokenize text and return in format expected by Hugging Face models.
-        
+
         Args:
             text (str): Input text to tokenize
             return_tensors (str): Format of returned tensors ("pt" for PyTorch)
             **kwargs: Additional arguments (for compatibility)
-            
+
         Returns:
             Dict containing 'input_ids' tensor ready for model input
         """
@@ -852,41 +887,49 @@ class Qwen3Tokenizer:
         return {"input_ids": token_ids}
 
 
-
 # =============================================================================
 # 5. Usage Example with Hugging Face Hub
 # =============================================================================
 
+
 def main():
     print("--- 1. Loading Model and Tokenizer from Hugging Face Hub ---")
-    
+
     # Use official Qwen model from Hugging Face Hub
     # Available models: "Qwen/Qwen2.5-0.5B", "Qwen/Qwen2.5-1.5B", "Qwen/Qwen2.5-3B", "Qwen/Qwen2.5-7B", etc.
-    model_name = "Qwen/Qwen2.5-1.5B-Instruct"  # Using a smaller model for faster loading
-    
+    model_name = (
+        "Qwen/Qwen2.5-1.5B-Instruct"  # Using a smaller model for faster loading
+    )
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.bfloat16 if device == "cuda" and torch.cuda.is_bf16_supported() else torch.float32
-    
+    dtype = (
+        torch.bfloat16
+        if device == "cuda" and torch.cuda.is_bf16_supported()
+        else torch.float32
+    )
+
     print(f"Loading {model_name} on {device} with {dtype}...")
-    
+
     # 1. Load tokenizer from Hub
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     print("Tokenizer loaded from Hugging Face Hub.")
-    
+
     # 2. Load model from Hub with automatic dtype and device mapping
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=dtype,
-        device_map="auto" if device == "cuda" else None,  # Automatic device mapping for multi-GPU
+        device_map=(
+            "auto" if device == "cuda" else None
+        ),  # Automatic device mapping for multi-GPU
         low_cpu_mem_usage=True,  # Reduces peak RAM usage during loading
-        trust_remote_code=False  # Official models don't need this
+        trust_remote_code=False,  # Official models don't need this
     )
-    
+
     if device == "cpu":
         model = model.to(device)
-    
+
     print(f"Model loaded successfully on {device}.")
-    
+
     # Set the model to evaluation mode
     model.eval()
 
@@ -894,16 +937,14 @@ def main():
     # The prompt format follows the Qwen chat template
     messages = [
         {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "Hello, what is the capital of France?"}
+        {"role": "user", "content": "Hello, what is the capital of France?"},
     ]
-    
+
     # Apply the chat template
     prompt = tokenizer.apply_chat_template(
-        messages, 
-        tokenize=False, 
-        add_generation_prompt=True
+        messages, tokenize=False, add_generation_prompt=True
     )
-    
+
     print(f"Prompt:\n{prompt}")
 
     # Tokenize the input prompt
@@ -920,31 +961,32 @@ def main():
             temperature=0.7,
             top_k=50,
             pad_token_id=tokenizer.eos_token_id,  # Use EOS as pad token
-            eos_token_id=tokenizer.eos_token_id
+            eos_token_id=tokenizer.eos_token_id,
         )
 
     # Decode the generated tokens to text (only the new tokens)
-    new_tokens = output_ids[0][input_ids.shape[-1]:]
+    new_tokens = output_ids[0][input_ids.shape[-1] :]
     response = tokenizer.decode(new_tokens, skip_special_tokens=True)
 
     print(f"\nModel Response:\n{response}")
-    
+
     # Demonstrate another prompt
     print("\n--- 3. Another Example ---")
     messages_2 = [
-        {"role": "user", "content": "Write a short poem about the beauty of programming."}
+        {
+            "role": "user",
+            "content": "Write a short poem about the beauty of programming.",
+        }
     ]
-    
+
     prompt_2 = tokenizer.apply_chat_template(
-        messages_2, 
-        tokenize=False, 
-        add_generation_prompt=True
+        messages_2, tokenize=False, add_generation_prompt=True
     )
-    
+
     print(f"Prompt:\n{prompt_2}")
     inputs_2 = tokenizer(prompt_2, return_tensors="pt")
     input_ids_2 = inputs_2["input_ids"].to(model.device)
-    
+
     with torch.no_grad():
         output_ids_2 = model.generate(
             input_ids_2,
@@ -952,11 +994,11 @@ def main():
             temperature=0.6,
             do_sample=True,
             pad_token_id=tokenizer.eos_token_id,
-            eos_token_id=tokenizer.eos_token_id
+            eos_token_id=tokenizer.eos_token_id,
         )
-    
+
     # Decode only the new tokens
-    new_tokens_2 = output_ids_2[0][input_ids_2.shape[-1]:]
+    new_tokens_2 = output_ids_2[0][input_ids_2.shape[-1] :]
     response_2 = tokenizer.decode(new_tokens_2, skip_special_tokens=True)
     print(f"\nModel Response:\n{response_2}")
 
