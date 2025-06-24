@@ -1,5 +1,5 @@
 import torch
-from model import Qwen3ForCausalLM
+from qwen3.model import Qwen3ForCausalLM
 
 
 def convert_and_load_weights(model: Qwen3ForCausalLM, original_weights_path: str):
