@@ -634,6 +634,8 @@ class Qwen3ForCausalLM(PreTrainedModel):
 
         # Initialize weights using Hugging Face's initialization scheme
         self.post_init()
+        # Tie input and output embeddings by sharing weights
+        self.lm_head.weight = self.embed_tokens.weight
 
     def get_input_embeddings(self):
         """Required method for Hugging Face compatibility."""
@@ -642,6 +644,14 @@ class Qwen3ForCausalLM(PreTrainedModel):
     def set_input_embeddings(self, value):
         """Required method for Hugging Face compatibility."""
         self.embed_tokens = value
+
+    def get_output_embeddings(self):
+        """Return the language modeling head for weight tying."""
+        return self.lm_head
+
+    def set_output_embeddings(self, new_embeddings):
+        """Set the language modeling head (needed for some HF utilities)."""
+        self.lm_head = new_embeddings
 
     def forward(
         self,
