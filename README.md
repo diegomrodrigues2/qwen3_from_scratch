@@ -19,7 +19,7 @@ This implementation follows a standard decoder-only transformer architecture wit
 
 ## 📂 Project Structure
 
-The entire implementation is self-contained in `model.py`, which includes:
+The entire implementation is self-contained in `qwen3/model.py`, which includes:
 
 -   `Qwen3Config`: A `PretrainedConfig` class for managing model hyperparameters.
 -   `Qwen3ForCausalLM`: The main model class inheriting from `PreTrainedModel`.
@@ -29,7 +29,7 @@ The entire implementation is self-contained in `model.py`, which includes:
 
 ## 💻 Usage
 
-The `main()` function in `model.py` provides a complete example of how to load an official Qwen model from the Hugging Face Hub and use it for text generation.
+The `main()` function in `qwen3/model.py` provides a complete example of how to load an official Qwen model from the Hugging Face Hub and use it for text generation.
 
 ### Using Hugging Face Hub (Recommended)
 
@@ -46,7 +46,7 @@ pip install torch transformers huggingface-hub tiktoken
 To run the demonstration:
 
 ```bash
-python model.py
+python qwen3/model.py
 ```
 
 The script will:
@@ -56,7 +56,7 @@ The script will:
 
 ### Using Local Weights (From Scratch)
 
-This repository also allows you to load original Qwen `.pth` weights and run the from-scratch model directly. A utility function is provided in `util.py` to handle the weight conversion.
+This repository also allows you to load original Qwen `.pth` weights and run the from-scratch model directly. A utility function is provided in `utils/util.py` to handle the weight conversion.
 
 **1. Download Original Weights**
 
@@ -69,8 +69,8 @@ Create a Python script (e.g., `run_local.py`) and add the following code. This s
 ```python
 import torch
 import os
-from model import Qwen3Config, Qwen3ForCausalLM, Qwen3Tokenizer
-from util import convert_and_load_weights
+from qwen3.model import Qwen3Config, Qwen3ForCausalLM, Qwen3Tokenizer
+from utils.util import convert_and_load_weights
 
 def run_local():
     print("--- 1. Initializing Model and Tokenizer from local files ---")
