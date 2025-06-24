@@ -1,0 +1,20 @@
+# Virtual environments
+venv/
+
+# Python cache directories
+__pycache__/
+
+# Compiled Python files
+*.pyc
+*.pyo
+
+# Pytest cache
+.pytest_cache/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+*.whl
+.eggs/
