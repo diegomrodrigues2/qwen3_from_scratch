@@ -129,9 +129,13 @@ class Qwen3Config(PretrainedConfig):
         n_layer: int = 32,
         n_head: int = 32,
         n_embd: int = 4096,
-        intermediate_size: int = 22016, # From the original model config
+        intermediate_size: int = 22016,  # From the original model config
         rope_theta: float = 10000.0,
-        **kwargs
+        use_cache: bool = True,
+        use_return_dict: bool = True,
+        output_attentions: bool = False,
+        output_hidden_states: bool = False,
+        **kwargs,
     ):
         self.vocab_size = vocab_size
         self.context_len = context_len
@@ -141,6 +145,11 @@ class Qwen3Config(PretrainedConfig):
         self.intermediate_size = intermediate_size
         self.rope_theta = rope_theta
 
+        # Cache and output settings used in the model forward pass
+        self.use_cache = use_cache
+        self.output_attentions = output_attentions
+        self.output_hidden_states = output_hidden_states
+
         # The Qwen model architecture supports Grouped-Query Attention (GQA) where
         # multiple query heads share key/value heads for efficiency. However, this
         # educational implementation uses Multi-Head Attention (MHA) for simplicity,
@@ -148,7 +157,12 @@ class Qwen3Config(PretrainedConfig):
         # For true GQA implementation, you would set n_kv_head < n_head.
         self.n_kv_head = n_head
 
-        super().__init__(**kwargs)
+        super().__init__(
+            return_dict=use_return_dict,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            **kwargs,
+        )
 
 
 # =============================================================================
