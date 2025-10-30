@@ -143,6 +143,54 @@ Execute the script from your terminal:
 python run_local.py
 ```
 
+## 🚀 GRPO Training
+
+This repository now includes a complete implementation of **GRPO (Group Relative Policy Optimization)**, an advanced RLHF technique for fine-tuning language models with reinforcement learning.
+
+### What is GRPO?
+
+GRPO is a policy gradient method that improves upon traditional PPO by:
+- **Group-Based Learning**: Generates multiple responses for each prompt and learns from their relative quality
+- **Variance Reduction**: Uses within-group comparisons to reduce gradient variance
+- **Simplicity**: Doesn't require a separate value network
+- **Better Sample Efficiency**: Achieves superior performance with fewer samples
+
+### Quick Start with GRPO
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run the example training script
+python grpo/train_grpo.py
+
+# Or use the minimal example
+python grpo/example.py
+```
+
+### GRPO Usage
+
+```python
+from grpo import GRPOTrainer, GRPOConfig, SimplePromptDataset
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+# Load models
+model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-1.5B-Instruct")
+ref_model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-1.5B-Instruct")
+tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-1.5B-Instruct")
+
+# Create dataset
+prompts = ["Your prompts here..."]
+dataset = SimplePromptDataset(prompts)
+
+# Configure and train
+config = GRPOConfig(batch_size=4, num_epochs=3)
+trainer = GRPOTrainer(model, ref_model, model, tokenizer, config, dataset)
+trainer.train()
+```
+
+For detailed documentation, see [grpo/README.md](grpo/README.md).
+
 ## 🎓 Educational Goals
 
 This repository is intended as a learning resource for those looking to:
@@ -150,4 +198,5 @@ This repository is intended as a learning resource for those looking to:
 -   Implement key components like RoPE, SwiGLU, and RMSNorm from scratch.
 -   Learn how to integrate a custom model into the Hugging Face ecosystem.
 -   See an example of weight conversion and model loading for custom architectures.
--   Understand the difference between using a pre-packaged Hub model and loading local weights. 
+-   Understand the difference between using a pre-packaged Hub model and loading local weights.
+-   Learn about advanced RLHF techniques like GRPO for fine-tuning language models. 
